@@ -1,0 +1,139 @@
+* [2015-07-21 Di] data preparation
+#+BEGIN_SRC R :session
+  today <- gsub("-","",as.character(Sys.Date()))
+  require(gamlss)
+  require(gamlss.tr)
+  require(dplyr)
+  require(lubridate)
+  
+  source("~/connection/connection.r")
+  get.data <- function(tab){
+      fetch(dbSendQuery(ldb,paste("select * from",tab)),n=-1)}
+  
+  
+  persdat <- get.data("R00001")
+  persdat <- persdat[,c("R00001_F0002","R00001_F0003","R00001_F0005")]
+  persdat$R00001_F0003 <- factor(persdat$R00001_F0003,labels=c("male","female"))
+  persdat$gebdat <- ymd(paste0(persdat$R00001_F0005,"15"))
+    persdat$R00001_F0005 <- NULL
+    
+  tables <- c("T00463","T00462","T00466","T00461","T00465","T00464","T00467")
+  
+  
+  for(tab in tables){
+      filename <- paste0(today,tab,".rdata")
+      print(filename)
+  
+      scigroup <- paste0(tab,"_SCI_GROUP")
+      data <- fetch(dbSendQuery(ldb,paste0("select * from ",
+                                           tab,
+                                           " where regexp_like(",
+                                           scigroup,
+                                           ",'A2|B1|SK')")),n=-1)
+      
+      data <- merge(persdat,data,by.x = "R00001_F0002", by.y = paste0(tab,"_F0004"))
+      data$alter <-  as.numeric(data[,paste0(tab,"_F0006")] - data$gebdat)/365.25
+  
+      save(data,file=filename)
+  }    
+#+END_SRC
+* [2015-07-21 Di] add fam id
+#+BEGIN_SRC R :session
+  setwd("/home/mvogel/doktoranden/anneds/")
+  
+  files <- dir()[grep("20150721T00",dir())]
+  
+  load("201507familiendaten.rdata")
+  
+  
+  for(file in files){
+      tt <- load(file)
+      data <- merge(familien[,c("sic","fam.id2")],data,by.x = "sic",by.y = "R00001_F0002")
+      save(data,file = paste0("fam",file))
+  }
+  
+  
+#+END_SRC
+
+
+* [2015-07-21 Di] make references
+#+BEGIN_SRC R :session
+  today <- gsub("-","",as.character(Sys.Date()))
+  require(gamlss)
+  require(gamlss.tr)
+  require(dplyr)
+    
+  files <- dir()[grep("fam20150721T00",dir())]
+  
+  for(file in files){
+      load(file) ## data
+      print(file)
+  
+      tab <- gsub("fam20150721|\\.rdata","",file)
+      mg <- paste0(tab,"_F0008")
+      flag <- paste0(tab,"_F0009")
+  
+      filename <- paste0(tab,".rdata")
+      
+      data_boys <- na.omit(data[data$R00001_F0003=="male",c(mg,"alter","R00001_F0003",flag,"fam.id2")])
+      data_girls <- na.omit(data[data$R00001_F0003=="female",c(mg,"alter","R00001_F0003",flag,"fam.id2")])
+      names(data_boys) <- names(data_girls) <- c("value","AGE","SEX","FLAG","FAMNR")
+  
+      print(table(data_boys$FLAG))
+      print(table(data_girls$FLAG))
+  
+      u.gr <- sum(data_boys$FLAG==0)
+      if(u.gr > 0){
+          data_boys$value[data_boys$FLAG==0] <- runif(u.gr,min=0,max=unique(data_boys$value[data_boys$FLAG==0]))
+          }
+  
+      u.gr <- sum(data_girls$FLAG==0)
+      if(u.gr > 0){
+          data_girls$value[data_girls$FLAG==0] <- runif(u.gr,min=0,max=unique(data_girls$value[data_girls$FLAG==0]))
+          }
+  
+      
+      res.boys <- list()
+      res.girls <- list()
+    
+      for(i in 1:1200){
+          print(i)
+          weights <- group_by(data_boys,FAMNR) %>% summarise(n=n(), wgt = 1-1/(n+1))
+          weights <- weights[sample(1:nrow(weights),size = 950,
+                                    prob = weights$wgt),]
+          tmpdata_boys <- data_boys[data_boys$FAMNR %in% weights$FAMNR,]
+          tmpdata_boys <- tmpdata_boys %>% group_by(FAMNR) %>% sample_n(1)
+          
+          weights <- group_by(data_girls,FAMNR) %>% summarise(n=n(), wgt = 1/(n+1))
+          weights <- weights[sample(1:nrow(weights),size = 950,
+                                    prob = weights$wgt),]
+          tmpdata_girls <- data_girls[data_girls$FAMNR %in% weights$FAMNR,]
+          tmpdata_girls <- tmpdata_girls %>% group_by(FAMNR) %>% sample_n(1)
+          
+          print("fitting boys")
+          tr.obj1 <- try(mm_boys <- lms(value, AGE, data = tmpdata_boys,
+                                        families = "BCPEo",method.pb = "ML", k = 2,trace = F,
+                                        sigma.df = 3))
+          
+          print("fitting girls")
+          tr.obj2 <- try(mm_girls <- lms(value, AGE, data = tmpdata_girls,
+                                         families = "BCPEo",method.pb = "ML", k = 2,trace = F,
+                                         sigma.df = 3))
+          
+          age <- seq(2,18,by = 1/12)
+          
+          if(mm_boys$family != "NO" & !("try-error" %in% class(tr.obj1))){
+              lms.boys <- as.data.frame(predictAll(mm_boys,
+                                                   newdata = data.frame(AGE = age)))
+              lms.boys$age <- age
+              res.boys[[length(res.boys) + 1 ]] <- lms.boys}
+          
+          if(mm_girls$family != "NO" & !("try-error" %in% class(tr.obj2))){
+              lms.girls <- as.data.frame(predictAll(mm_girls,newdata = data.frame(AGE = age)))
+              lms.girls$age <- age
+              res.girls[[length(res.girls) + 1 ]] <- lms.girls }
+      }
+      save(res.boys,res.girls,file = filename)
+  }
+  
+#+END_SRC
